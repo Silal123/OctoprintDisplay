@@ -1,21 +1,34 @@
 #include <Adafruit_GC9A01A.h>
 #include <Adafruit_GFX.h>
 #include <SPI.h>
+
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
+#include <ESPAsyncWebServer.h>
+#include <ESP8266mDNS.h>
+#include <DNSServer.h>
+#include <WiFiClient.h>
+
 #include <EEPROM.h>
+
 #include <ArduinoJson.h>
 
 #include <iostream>
 #include <iomanip>
 #include <string>
 
+#include "utils.h"
+
+//########################################
 #define EEPROM_SIZE 512
 
 const char* WIFI_SSID = "Silas-Netz";
 const char* WIFI_PASS = "tWL6us6J";
 
-JsonDocument OCTO_DATA;
+const char* AP_SSID = "Fallback Printstatus";
+const char* AP_PASS = "fallback";
+
+const char* ESP_HOSTNAME = "printstatus";
 
 String OCTOPRINT = "http://192.168.178.76/";
 String OCTOPRINT_TOKEN = "5PPmKpAv6Nrmk0UAJVX910PohuEwvPp6uk6JRiUOf04";
@@ -25,110 +38,59 @@ String OCTOPRINT_TOKEN = "5PPmKpAv6Nrmk0UAJVX910PohuEwvPp6uk6JRiUOf04";
 #define TFT_CS    D0
 #define TFT_DC    D1
 #define TFT_RST   D2
+//########################################
+
+JsonDocument OCTO_DATA;
 
 HTTPClient sender;
 WiFiClient wifiClient;
 
 Adafruit_GC9A01A tft = Adafruit_GC9A01A(TFT_CS, TFT_DC, TFT_RST);
 
-void drawArc(int x, int y, int radius, float startAngle, float endAngle, uint16_t color) {
-  int segments = 100;
-  for (int i = 0; i < segments; i++) {
-    float angle1 = startAngle + (endAngle - startAngle) * i / segments;
-    float angle2 = startAngle + (endAngle - startAngle) * (i + 1) / segments;
-    
-    int x1 = x + radius * cos(angle1);
-    int y1 = y + radius * sin(angle1);
-    int x2 = x + radius * cos(angle2);
-    int y2 = y + radius * sin(angle2);
+AsyncWebServer server(80);
 
-    tft.drawLine(x1, y1, x2, y2, color);
-  }
-}
-
-void drawThickArc(int x, int y, int radius, int thickness, float startAngle, float endAngle, uint16_t color) {
-  int segments = 100;
-
-  for (int i = 0; i < thickness; i++) {
-    int currentRadius = radius - i;
-    for (int j = 0; j < segments; j++) {
-      float angle1 = startAngle + (endAngle - startAngle) * j / segments;
-      float angle2 = startAngle + (endAngle - startAngle) * (j + 1) / segments;
-      
-      int x1 = x + currentRadius * cos(angle1);
-      int y1 = y + currentRadius * sin(angle1);
-      int x2 = x + currentRadius * cos(angle2);
-      int y2 = y + currentRadius * sin(angle2);
-      
-      tft.drawLine(x1, y1, x2, y2, color);
-    }
-  }
-}
-
-void drawPerArc(int i, uint16_t color) {
-  float factor = ((i / 100.0) + 1) * 3.14159;
-
-  if (factor > 2 * 3.14159) {
-    factor = 2 * 3.14159;
-  }
-
-  int centerX = tft.width() / 2;
-  int centerY = tft.height() / 2;
-  int radius = tft.width() / 2 - 10;
-  int thickness = 20;
-
-  drawArc(centerX, centerY, radius + 1, 3.14159, 2 * 3.14159, GC9A01A_WHITE);
-  drawArc(centerX, centerY, radius - thickness, 3.14159, 2 * 3.14159, GC9A01A_WHITE);
-
-  drawThickArc(centerX, centerY, radius, thickness, 3.14159, factor, color);
-}
-
-void displayCenteredText(String text, int x, int y, uint8_t text_size, uint16_t color) {
-  int16_t textWidth = text.length() * 6 * text_size;
-  int16_t tx = x - (textWidth / 2);
-  int16_t ty = (y - ((12 * text_size) / 2)) ;
-
-  tft.setCursor(tx, ty);
-  tft.setTextColor(color);
-  tft.setTextSize(text_size);
-  tft.print(text);
-}
-
-void displayText(String text, int x, int y, uint8_t text_size, uint16_t color) {
-  int16_t ty = (y - ((12 * text_size) / 2)) ;
-
-  tft.setCursor(x, ty);
-  tft.setTextColor(color);
-  tft.setTextSize(text_size);
-  tft.print(text);
-}
-
-String convertSeconds(int totalSeconds) {
-    if (totalSeconds < 60) {
-        return String(totalSeconds) + "s";
-    }
-
-    int minutes = totalSeconds / 60;
-    int seconds = totalSeconds % 60;
-    int days = minutes / 1440;
-    minutes = minutes % 1440;
-
-    String formattedTime = String(days) + ":";
-    formattedTime += String(minutes) + ":";
-    formattedTime += String(seconds);
-
-    return formattedTime;
-}
-
-String cutText(String text, int chars) {
-  if (text.length() > chars) {
-    text = text.substring(0, chars) + "...";
-  }
-  
-  return text;
-}
+//########################################
 
 static const unsigned char PROGMEM image_music_pause_bits[] = {0xf9,0xf0,0x89,0x10,0x89,0x10,0x89,0x10,0x89,0x10,0x89,0x10,0x89,0x10,0x89,0x10,0x89,0x10,0x89,0x10,0x89,0x10,0x89,0x10,0x89,0x10,0x89,0x10,0xf9,0xf0,0x00,0x00};
+
+const char index_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Captive Portal</title>
+  </head>
+  <body>
+    <h1>Test of default page!</h1>
+    <p>Test!</p>
+  </body>
+</html>
+)rawliteral";
+
+void startServer() {
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(200, "text/htmt", index_html);
+  });
+
+  server.onNotFound([](AsyncWebServerRequest *request){
+    request->send(200, "text/html", "<!DOCTYPE html><html><head><title>Captive Portal</title></head><body><h1>Page not found!</h1><p>Please connect to / default page!</p></body></html>");
+  });
+
+  server.begin();
+}
+
+void startCaptivePortal() {
+  WiFi.softAP(AP_SSID, AP_PASS);
+  Serial.println("Access Point gestartet");
+
+  Serial.print("IP-Adresse des Access Points: ");
+  Serial.println(WiFi.softAPIP());
+
+  displayCenteredText("Ap: " + String(AP_SSID), tft.width() / 2, (tft.height() / 2) - 20, 1, GC9A01A_RED);
+  displayCenteredText("Pass: " + String(AP_PASS), tft.width() / 2, (tft.height() / 2) - 5, 1, GC9A01A_RED);
+  displayCenteredText(WiFi.softAPIP().toString(), tft.width() / 2, (tft.height() / 2) + 20, 2, GC9A01A_RED);
+
+  startServer();
+}
 
 void setupWifi() {
   WiFi.begin(WIFI_SSID, WIFI_PASS);
@@ -164,6 +126,7 @@ void setup() {
 
   Serial.println("Trying Connecting to Wifi!");
   setupWifi();
+  //startCaptivePortal();
 
   displayCenteredText("Connecting...", tft.width() / 2, tft.height() / 2, 2, GC9A01A_RED);
 
@@ -196,7 +159,7 @@ void loadPrintingScreen() {
 
   if (!OCTO_DATA["progress"]["completion"].isNull()) {
     float completion = OCTO_DATA["progress"]["completion"];
-    float percent = completion * 10;
+    float percent = completion;
     displayCenteredText(String(percent) + "%", tft.width() / 2, (tft.height() / 2) - 20, 4, GC9A01A_WHITE);
     drawPerArc(percent, GC9A01A_GREEN);
   } else {
@@ -220,7 +183,6 @@ void loop() {
   //} else {
   //  loadNoPrintScreen();
   //}
+  delay(2000);
   loadPrintingScreen();
-  
-  delay(10000);
 }
