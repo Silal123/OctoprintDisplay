@@ -215,11 +215,12 @@ void loadNoPrintScreen() {
 void loop() {
   fetchData();
   String state = OCTO_DATA["state"];
-  if (state == "Printing" || state == "Pausing" || state == "Paused") {
-    loadPrintingScreen();
-  } else {
-    loadNoPrintScreen();
-  }
+  //if (state == "Printing" || state == "Pausing" || state == "Paused") {
+  //  loadPrintingScreen();
+  //} else {
+  //  loadNoPrintScreen();
+  //}
+  loadPrintingScreen();
   
   delay(10000);
 }
